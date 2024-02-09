@@ -22,19 +22,20 @@ def vertices_in_between_adMat(adMat, start_vertex, end_vertex):
             vInBetween.append(vertex)
     return list(set(vInBetween) - set([start_vertex]) | set([end_vertex]))
 
-def mobius_function_from_adMat(adMat, i, j):
-    '''
-    Recursively calculates the Moebius function between any two indices i and j. 
-    adMat: The poset adjacency matrix
-    '''
-    if i == j:
-        return 1
-    if adMat[i, j] == 0:
-        return 0
-    mu=0
-    for v in vertices_in_between_adMat(adMat, i, j):
-        mu += mobius_function_from_adMat(adMat, v, j)
-    return -mu
+# def mobius_function_from_adMat(adMat, i, j):
+#     '''
+#     Recursively calculates the Moebius function between any two indices i and j. 
+#     adMat: The poset adjacency matrix
+#     this recursive implementaion is very inefficient as it recalculates the same values many times.
+#     '''
+#     if i == j:
+#         return 1
+#     if adMat[i, j] == 0:
+#         return 0
+#     mu=0
+#     for v in vertices_in_between_adMat(adMat, i, j):
+#         mu += mobius_function_from_adMat(adMat, v, j)
+#     return -mu
 
 def reduceAdjacencyMatrix(A):
     '''
@@ -131,13 +132,50 @@ for N in [2, 3, 4, 5]:
     pd.DataFrame(A_direct).astype(int).to_csv(f'antichain_outputs/antiChainLattice_adjMat_direct_N={N}.csv')
 
     
-    def MF(A, i, j):
-        return (i, j, mobius_function_from_adMat(A, i, j))
+    def calcMFnsOfNode(node, antiChains, A, A_red):
+        '''
+        Calculate the vector of Möbius function evals mu(i, node) of a node in the lattice.
+        An efficient way to calculate the vector mu(i, node) is to start at the top element mu(node, node), which is 1 by def.
+        Then we take increasingly big steps on the reversed lattice to go down in the poset. At each iteration, we can simply sum all of the values of the Möbius functions above it, which are already calculated. 
+        This bypasses the need for recursion, and is much faster because it reuses already calculated values.
+        node: The index of the node in the lattice
+        antiChains: The list of antichains
+        A: The adjacency matrix of the lattice
+        A_red: The reduced adjacency matrix with only direct connections
+        '''
+        v = np.zeros(len(antiChains))
+        v[node] = 1
+
+        # The adjacency matrix for paths of a given length is A^length.
+        AdjAtCurrentDist = A_red.copy().T
+        for distance in range(len(antiChains)):
+            # For all nodes that are reachable by paths with the current distance:
+            nextNodes = np.where(AdjAtCurrentDist[node, :] > 0)[0]
+            for nextNode in nextNodes:
+                # Sum the value of all the Möbius function 'above' it. That is, the ancestors on the reversed lattice. 
+                v[nextNode] = -sum([v[ancestor] for ancestor in np.where(A.T[:, nextNode] > 0)[0]])
+
+            # Increase the distance by one
+            AdjAtCurrentDist = AdjAtCurrentDist@A_red.T
+
+        return v
+
 
     print('Calculating Moebius functions')
-    results = Parallel(n_jobs=-1)(delayed(MF)(A, i, j) for i in range(A.shape[0]) for j in range(A.shape[0]) if i != j)
+    MFmat = np.zeros((len(antiChains), len(antiChains)))
 
+    results = Parallel(n_jobs=-1)(delayed(calcMFnsOfNode)(node, antiChains, A, A_direct) for node in range(len(antiChains)))
+
+    for i, v in enumerate(results):
+        MFmat[:, i] = v
+    MFmat = MFmat.astype(int)
+    
     print('Saving Moebius functions')
-    df = pd.DataFrame(np.array([[r[0], r[1], labs[r[0]], labs[r[1]], r[2]] for r in results]))
-    df.columns = ['i', 'j', 'i_label', 'j_label', 'mobius']
-    df.to_csv(f'antichain_outputs/antiChainLattice_mobiusFn_N={N}.csv')
+    # If the lattice is small (N<=4), we can save the full matrix. Otherwise, we save only the non-zero values.
+    MFdf = pd.DataFrame(MFmat, columns=labs, index=labs)
+    if N<=4:
+        MFdf.to_csv(f'antichain_outputs/antiChainLattice_mobiusFns_N={N}.csv')
+    else:
+        nonzeroMFs = pd.DataFrame(MFdf[MFdf!=0].stack().reset_index().to_records(index=False))
+        nonzeroMFs.columns = ['a', 'b', 'mu(a, b)']
+        nonzeroMFs.to_csv(f'antichain_outputs/antiChainLattice_mobiusFns_N={N}.csv')
